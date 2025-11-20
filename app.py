@@ -95,8 +95,10 @@ def login_required(f):
 
 
 with app.app_context():
-    db.create_all(checkfirst=True)
-
+    try: 
+        db.create_all()
+    except Exception as e:
+        app.logger.error("Error creating database tables: %s", e)
 @app.route('/')
 def index():
     posts = Post.query.order_by(Post.created_at.desc()).all()
