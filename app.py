@@ -95,7 +95,7 @@ def login_required(f):
 
 
 with app.app_context():
-    db.create_all()
+    db.create_all(checkfirst=True)
 
 @app.route('/')
 def index():
