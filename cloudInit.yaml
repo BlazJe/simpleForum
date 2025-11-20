@@ -1,6 +1,7 @@
 #cloud-config
 package_update: true
 package_upgrade: false
+
 packages:
   - mysql-server
   - redis-server
@@ -11,142 +12,113 @@ packages:
   - nginx
   - openssl
 
+write_files:
+  - path: /etc/systemd/system/app.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Gunicorn service for Flask simpleForum
+      After=network.target mysql.service redis-server.service
+
+      [Service]
+      Restart=always
+      RestartSec=5
+      User=ubuntu
+      Group=www-data
+      WorkingDirectory=/home/ubuntu/simpleForum
+      Environment="PATH=/home/ubuntu/simpleForum/venv/bin"
+      ExecStart=/home/ubuntu/simpleForum/venv/bin/gunicorn \
+          --workers 3 \
+          --bind unix:/home/ubuntu/simpleForum/gunicorn.sock \
+          --access-logfile /home/ubuntu/simpleForum/logs/access.log \
+          --error-logfile /home/ubuntu/simpleForum/logs/error.log \
+          wsgi:app
+
+      [Install]
+      WantedBy=multi-user.target
+
 runcmd:
-  # 1. Čakanje in nastavitve baz podatkov
-  - until systemctl is-active --quiet mysql; do sleep 5; done
-  
-  # MySQL setup
-  - mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'rootpass'; FLUSH PRIVILEGES;"
-  - mysql -u root -prootpass -e "CREATE DATABASE IF NOT EXISTS flaskdb CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS 'flaskuser'@'localhost' IDENTIFIED BY 'flaskpass'; GRANT ALL PRIVILEGES ON flaskdb.* TO 'flaskuser'@'localhost'; FLUSH PRIVILEGES;"
+  # ===== 1. Environment variables =====
+  - SQL_USER="flaskuser"
+  - SQL_PASS="flaskpass"
+  - ROOT_SQL_PASS="rootpass"
+  - REDIS_USER="flaskuser"
+  - REDIS_PASS="flaskpass"
+  - SECRET_KEY="EnterYourSecretKeyHere"
 
-  # Redis setup
-  - redis-cli ACL SETUSER flaskuser on "flaskpass123!" ~* +get +set +del +exists +expire +ttl
-  - sed -i "s/^# requirepass .*/requirepass flaskpass123!/" /etc/redis/redis.conf
-  - sed -i "s/^bind .*/bind 127.0.0.1/" /etc/redis/redis.conf
-  - sed -i "s/^protected-mode no/protected-mode yes/" /etc/redis/redis.conf
-  - systemctl restart redis-server
+  - DATABASE_URL="mysql+pymysql://$SQL_USER:$SQL_PASS@127.0.0.1/flaskdb?charset=utf8mb4"
+  - REDIS_URL="redis://$REDIS_USER:$REDIS_PASS@127.0.0.1:6379/0"
 
-  # 2. Namestitev aplikacije in virtualno okolje
-  - git clone https://github.com/BlazJe/simpleForum.git /home/ubuntu/simpleForum
-  - chown -R ubuntu:ubuntu /home/ubuntu/simpleForum
-  
-  
+  # ===== 2. Wait for MySQL ready =====
+  - until systemctl is-active --quiet mysql; do sleep 3; done
 
-  # Create .env file
+  # ===== 3. MySQL =====================
+  - mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$ROOT_SQL_PASS'; FLUSH PRIVILEGES;"
+
   - |
-    cat > /home/ubuntu/simpleForum/.env <<EOF
-    SECRET_KEY="k9G3vPq2sR8xZtN4wL0uF6yH1aB7mC5dE2jK0oQ9rT3sV6zX8nY1pU4"
-    DATABASE_URL="mysql+pymysql://flaskuser:flaskpass@127.0.0.1/flaskdb?charset=utf8mb4"
-    REDIS_URL="redis://flaskuser:flaskpass123!@127.0.0.1:6379/0"
+    mysql -uroot -p$ROOT_SQL_PASS <<EOF
+    CREATE DATABASE IF NOT EXISTS flaskdb CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    CREATE USER IF NOT EXISTS '$SQL_USER'@'localhost' IDENTIFIED BY '$SQL_PASS';
+    GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, REFERENCES ON flaskdb.* TO '$SQL_USER'@'localhost';
+    FLUSH PRIVILEGES;
     EOF
 
-  # Python environment
-  - python3 -m venv /home/ubuntu/simpleForum/venv
-  - /home/ubuntu/simpleForum/venv/bin/pip install --upgrade pip
-  - /home/ubuntu/simpleForum/venv/bin/pip install -r /home/ubuntu/simpleForum/requirements.txt
-  
-  # Inicializacija baze podatkov s Flask CLI
-  - cd /home/ubuntu/simpleForum
+  # ===== 4. Redis ======================
+  - redis-cli ACL SETUSER $REDIS_USER on "$REDIS_PASS" ~* +get +set +del +exists +expire +ttl
+  - sed -i "s/^# requirepass .*/requirepass $REDIS_PASS/" /etc/redis/redis.conf
+  - sed -i "s/^bind .*/bind 127.0.0.1/" /etc/redis/redis.conf
+  - sed -i "s/^protected-mode no/protected-mode yes/" /etc/redis/redis.conf
+  - systemctl enable redis-server
+  - systemctl restart redis-server
+
+  # ===== 5. Clone app ==================
+  - git clone https://github.com/BlazJe/simpleForum.git /home/ubuntu/simpleForum
+  - chown -R ubuntu:ubuntu /home/ubuntu/simpleForum
+
+  # ===== 6. Create .env file ===========
   - |
-    cat > /home/ubuntu/simpleForum/init_db.py <<'EOD'
-    import os
-    from dotenv import load_dotenv
-    load_dotenv("/home/ubuntu/simpleForum/.env")
+    cat > /home/ubuntu/simpleForum/.env <<EOF
+    SECRET_KEY="$SECRET_KEY"
+    DATABASE_URL="$DATABASE_URL"
+    REDIS_URL="$REDIS_URL"
+    EOF
 
-    from flask import Flask
-    from flask_sqlalchemy import SQLAlchemy
+  # ===== 7. Python venv ================
+  - cd /home/ubuntu/simpleForum
+  - python3 -m venv venv
+  - /home/ubuntu/simpleForum/venv/bin/pip install --upgrade pip
+  - /home/ubuntu/simpleForum/venv/bin/pip install -r requirements.txt
 
-    # Ročno ustvari aplikacijo - enako kot v app.py
-    app = Flask(__name__)
-    app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    app.config.setdefault('SQLALCHEMY_ENGINE_OPTIONS', {})
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'].setdefault('pool_pre_ping', True)
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'].setdefault('pool_recycle', 280)
-
-    db = SQLAlchemy(app)
-
-    with app.app_context():
-        try:
-            db.create_all()
-            from sqlalchemy import inspect
-            inspector = inspect(db.engine)
-            tables = inspector.get_table_names()
-            print(f"DB init OK. Ustvarjene tabele: {tables}")
-            if 'post' in tables:
-                print("   Tabela 'post' obstaja!")
-            else:
-                print("   OPOZORILO: Tabela 'post' MANJKA!")
-        except Exception as e:
-            print(f"DB init FAILED: {e}")
-            import traceback
-            traceback.print_exc()
-            exit(1)
-    EOD
-
-  - /home/ubuntu/simpleForum/venv/bin/python /home/ubuntu/simpleForum/init_db.py || echo "DB INIT FAILED" > /home/ubuntu/simpleForum/logs/db_init_error.log
-  - rm /home/ubuntu/simpleForum/init_db.py
-  - cd /home/ubuntu
-
-  # Dovoljenja in logi
-  - usermod -aG www-data ubuntu
+  # ===== 8. Logging dirs ===============
   - mkdir -p /home/ubuntu/simpleForum/logs
   - chown -R ubuntu:www-data /home/ubuntu/simpleForum/logs
-  - chmod 770 /home/ubuntu/simpleForum/logs
+  - chmod 750 /home/ubuntu/simpleForum/logs
 
-  # 🟢 POPRAVEK DOVOLJENJ ZA NGINX DOSTOP DO GUNICORN.SOCK
+  # ===== 9. Permissions for Nginx/Gunicorn =====
   - chown -R ubuntu:www-data /home/ubuntu/simpleForum
   - chmod 711 /home/ubuntu
   - chmod 750 /home/ubuntu/simpleForum
-  - chmod 770 /home/ubuntu/simpleForum/logs
 
-  # 3. Gunicorn Storitev (Varnostna nastavitev + UMask=000)
-  - |
-    cat > /etc/systemd/system/app.service <<EOL
-    [Unit]
-    Description=Gunicorn service for Flask simpleForum
-    After=network.target mysql.service redis-server.service
-
-    [Service]
-    Restart=always
-    RestartSec=5
-    User=ubuntu
-    Group=www-data
-    UMask=000
-    WorkingDirectory=/home/ubuntu/simpleForum
-    Environment="PATH=/home/ubuntu/simpleForum/venv/bin"
-    ExecStart=/home/ubuntu/simpleForum/venv/bin/gunicorn \
-        --workers 3 \
-        --bind unix:/home/ubuntu/simpleForum/gunicorn.sock \
-        --access-logfile /home/ubuntu/simpleForum/logs/access.log \
-        --error-logfile /home/ubuntu/simpleForum/logs/error.log \
-        app:app
-
-    [Install]
-    WantedBy=multi-user.target
-    EOL
-
+  # ===== 10. Enable + start Gunicorn ===
   - systemctl daemon-reload
   - systemctl enable app.service
-
-  # Po zagonu Gunicorna popravi dovoljenja na socketu
   - systemctl start app.service
   - sleep 3
+
+  # Fix socket permissions after start
   - |
     if [ -S /home/ubuntu/simpleForum/gunicorn.sock ]; then
       chown ubuntu:www-data /home/ubuntu/simpleForum/gunicorn.sock
       chmod 660 /home/ubuntu/simpleForum/gunicorn.sock
     fi
 
-  # 4. Nginx + SSL setup
+  # ===== 11. SSL + Nginx config =========
   - mkdir -p /etc/nginx/ssl
   - openssl ecparam -genkey -name prime256v1 -out /etc/nginx/ssl/ecc.key
   - openssl req -new -x509 -key /etc/nginx/ssl/ecc.key -out /etc/nginx/ssl/ecc.crt -days 365 -subj "/CN=localhost"
 
-  # Nginx config: popravi include
   - |
-    cat > /etc/nginx/sites-available/simpleforum.conf <<EOL
+    cat > /etc/nginx/sites-available/simpleforum.conf <<EOF
     server {
         listen 443 ssl;
         server_name localhost;
@@ -154,18 +126,18 @@ runcmd:
         ssl_certificate /etc/nginx/ssl/ecc.crt;
         ssl_certificate_key /etc/nginx/ssl/ecc.key;
         ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_prefer_server_ciphers on;
         ssl_ecdh_curve prime256v1;
+        ssl_prefer_server_ciphers on;
 
         location / {
-            include /etc/nginx/proxy_params;
+            include proxy_params;
             proxy_pass http://unix:/home/ubuntu/simpleForum/gunicorn.sock;
         }
     }
-    EOL
+    EOF
 
-  # Povezava in zagon Nginxa
   - ln -sf /etc/nginx/sites-available/simpleforum.conf /etc/nginx/sites-enabled/simpleforum.conf
   - rm -f /etc/nginx/sites-enabled/default
-  - nginx -t 
+  - systemctl enable nginx
+  - nginx -t
   - systemctl restart nginx

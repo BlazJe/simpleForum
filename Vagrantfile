@@ -12,9 +12,16 @@ Vagrant.configure("2") do |config|
 
       SQL_USER="flaskuser"
       SQL_PASS="flaskpass"
+      ROOT_SQL_PASS="rootpass"
+      REDIS_USER="flaskuser"
+      REDIS_PASS="flaskpass"
+      SECRET_KEY="EnterYourSecretKeyHere"
+      DATABASE_URL="mysql+pymysql://$SQL_USER:$SQL_PASS@127.0.0.1/flaskdb?charset=utf8mb4"
+      REDIS_URL="redis://$REDIS_USER:$REDIS_PASS@127.0.0.1:6379/0"
 
-      sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'rootpass'; FLUSH PRIVILEGES;"
-      sudo mysql -uroot -prootpass -e "
+
+      sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$ROOT_SQL_PASS'; FLUSH PRIVILEGES;"
+      sudo mysql -uroot -p$ROOT_SQL_PASS -e "
 CREATE DATABASE IF NOT EXISTS flaskdb CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '$SQL_USER'@'localhost' IDENTIFIED BY '$SQL_PASS';
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, REFERENCES ON flaskdb.* TO '$SQL_USER'@'localhost';
@@ -23,9 +30,6 @@ FLUSH PRIVILEGES;
 
       sudo apt install -y redis-server
       sudo systemctl enable redis-server
-
-      REDIS_USER="flaskuser"
-      REDIS_PASS="flaskpass123!"
 
       sudo redis-cli ACL SETUSER $REDIS_USER on "$REDIS_PASS" ~* +get +set +del +exists +expire +ttl
       sudo sed -i "s/^# requirepass .*/requirepass $REDIS_PASS/" /etc/redis/redis.conf
@@ -37,10 +41,6 @@ FLUSH PRIVILEGES;
       cd ~
       git clone https://github.com/BlazJe/simpleForum.git
       cd simpleForum
-
-      SECRET_KEY="k9G3vPq2sR8xZtN4wL0uF6yH1aB7mC5dE2jK0oQ9rT3sV6zX8nY1pU4"
-      DATABASE_URL="mysql+pymysql://$SQL_USER:$SQL_PASS@127.0.0.1/flaskdb?charset=utf8mb4"
-      REDIS_URL="redis://$REDIS_USER:$REDIS_PASS@127.0.0.1:6379/0"
 
       cat > .env <<EOF
 SECRET_KEY="${SECRET_KEY}"
